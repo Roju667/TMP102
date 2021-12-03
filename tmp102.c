@@ -109,16 +109,32 @@ float TMP102GetTempFloat(TMP102_t *tmp102)
 	int16_t val;
 	float temp_c;
 
+	// check configuration
+	TMP102GetConfiguration(tmp102);
+
+
 	// read temp data from register
 	val = (int16_t)TMP102_Read16(tmp102,TMP102_REG_TEMP);
 
-	// Convert to 2's complement, since temperature can be negative
-	if (val > 0x7FF) {
-		val |= 0xF000;
+	// 12 bit mode - normal
+	if(tmp102->Configuration.TMP102_EM == 0)
+	{
+		// Convert to 2's complement, since temperature can be negative
+		if (val > 0x7FF) {
+			val |= 0xF000;
+			}
+	}
+	else
+		//13 bit mode - extended
+	{
+		if (val > 0xFFF){
+			val |= 0xE000;
 		}
+	}
 
 	// Convert to float temperature value (Celsius)
 	temp_c = (float)(val * 0.0625);
+
 
 	return temp_c;
 }
