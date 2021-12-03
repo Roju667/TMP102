@@ -1,15 +1,23 @@
 /*
- * utilities.c
+ * utils.c
  *
- *  Created on: Sep 3, 2021
- *      Author: pawel
+ *  Created on: 24 cze 2021
+ *      Author: ROJEK
  */
 
 #include "main.h"
-#include "utilities.h"
-#include "stdio.h"
+#include "utils.h"
 #include "usart.h"
+#include "string.h"
+#include "stdio.h"
 
+void UartLogBT (char *Msg) {
+	HAL_UART_Transmit(&huart1, (uint8_t*)Msg, strlen(Msg), 100);
+}
+
+void UartLogPC (char *Msg) {
+	HAL_UART_Transmit(&huart2, (uint8_t*)Msg, strlen(Msg), 100);
+}
 
 void I2CScan (I2C_HandleTypeDef* i2chandle)
 {
@@ -19,7 +27,7 @@ void I2CScan (I2C_HandleTypeDef* i2chandle)
 	char Msg[64];
 	uint16_t Len;
 
-	Len = sprintf(Msg,"Scanning i2c bus\r\n Devices found :\r\n");
+	Len = sprintf(Msg,"Scanning i2c bus...");
 	HAL_UART_Transmit(&huart2, (uint8_t*) Msg, Len, 1000);
 
   	for (i=0; i<127; i++)
@@ -35,11 +43,11 @@ void I2CScan (I2C_HandleTypeDef* i2chandle)
   	  result = HAL_I2C_IsDeviceReady(i2chandle, (uint16_t)(i<<1), 2, 2);
   	  if (result != HAL_OK) // HAL_ERROR or HAL_BUSY or HAL_TIMEOUT
   	  {
-  		  //
+  		HAL_UART_Transmit(&huart2, (uint8_t*)".", 1, 1000);
   	  }
   	  if (result == HAL_OK)
   	  {
-  		Len = sprintf(Msg,"Device found! Adress : 0x%X\r\n", i);
+  		Len = sprintf(Msg,"\r\nDevice found! Address : 0x%X\r\n", i);
   		HAL_UART_Transmit(&huart2, (uint8_t*) Msg, Len, 1000);
   	  }
   	}
