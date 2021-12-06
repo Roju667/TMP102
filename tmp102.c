@@ -13,8 +13,17 @@
 #include "usart.h"
 #include "tmp102.h"
 
+// edit register macro
 #define TMP102_EDITCONIFG_1BIT(config,value,offset)				(config) &= ~(1 << (offset)); (config) |= ((value) << (offset))
 #define TMP102_EDITCONIFG_2BIT(config,value,offset)				(config) &= ~(3 << (offset)); (config) |= ((value) << (offset))
+
+// check if the value defined by user is not to big for register macro
+#define TMP102_CHECK_REGISTER_1BIT(value,errorbuffer)			if((value) > 1) { (errorbuffer) = TMP102_ERR_WRONGCONFIG; return (errorbuffer);}
+#define TMP102_CHECK_REGISTER_2BIT(value,errorbuffer)			if((value) > 3) { (errorbuffer) = TMP102_ERR_WRONGCONFIG; return (errorbuffer);}
+
+//Convert to 2's complement, since temperature can be negative
+#define TMP102_CHECKSIGN_12BIT(value)							if (value > 0x7FF){value |= 0xF000;}
+#define TMP102_CHECKSIGN_13BIT(value)							if (value > 0xFFF){value |= 0xE000;}
 
 /*
  * Read 2 bytes from TMP102
@@ -38,7 +47,8 @@ static uint16_t TMP102_Read16(TMP102_t *tmp102, uint8_t reg)
 	}
 
 	// address has to be shifted one place left because hal requires left allinged 7bit address
-	HAL_I2C_Mem_Read(tmp102->I2CHandle, ((tmp102->DeviceAdress) << 1), reg, 1, value, 2, TMP102_I2C_TIMEOUT);
+	HAL_I2C_Mem_Read(tmp102->I2CHandle, ((tmp102->DeviceAdress) << 1), reg, 1,
+			value, 2, TMP102_I2C_TIMEOUT);
 
 	// write to 16 bits , two 8 bits registers
 	// 0000 0000 0000 0000 , first we write value[0] which has 8 significant bits as X << 4 XXXX XXXX
@@ -49,7 +59,14 @@ static uint16_t TMP102_Read16(TMP102_t *tmp102, uint8_t reg)
 	// return 16 bit data
 	if (reg != TMP102_REG_CONFIG)
 	{
-		return (value[0] << 4) | (value[1] >> 4);
+		if (tmp102->Configuration.TMP102_EM == 0)
+		{
+			return (value[0] << 4) | (value[1] >> 4);
+		}
+		else
+		{
+			return (value[0] << 5) | (value[1] >> 3);
+		}
 	}
 	else
 	{
@@ -91,7 +108,8 @@ static void TMP102_Write16(TMP102_t *tmp102, uint8_t reg, uint16_t value)
 	}
 
 	// write 16 bit data to TMP102
-	HAL_I2C_Mem_Write(tmp102->I2CHandle, ((tmp102->DeviceAdress) << 1), reg, 1, buf, 2, TMP102_I2C_TIMEOUT);
+	HAL_I2C_Mem_Write(tmp102->I2CHandle, ((tmp102->DeviceAdress) << 1), reg, 1,
+			buf, 2, TMP102_I2C_TIMEOUT);
 	tmp102->ErrorCode = TMP102_ERR_NOERROR;
 	return;
 }
@@ -106,35 +124,29 @@ static void TMP102_Write16(TMP102_t *tmp102, uint8_t reg, uint16_t value)
 float TMP102GetTempFloat(TMP102_t *tmp102)
 {
 	// define variables
-	int16_t val;
-	float temp_c;
+	int16_t val = 0;
+	float temp_c = 0;
 
 	// check configuration
 	TMP102GetConfiguration(tmp102);
 
-
 	// read temp data from register
-	val = (int16_t)TMP102_Read16(tmp102,TMP102_REG_TEMP);
+	val = (int16_t) TMP102_Read16(tmp102, TMP102_REG_TEMP);
 
 	// 12 bit mode - normal
-	if(tmp102->Configuration.TMP102_EM == 0)
+	if (tmp102->Configuration.TMP102_EM == 0)
 	{
-		// Convert to 2's complement, since temperature can be negative
-		if (val > 0x7FF) {
-			val |= 0xF000;
-			}
+		// check if value is negative
+		TMP102_CHECKSIGN_12BIT(val);
 	}
 	else
-		//13 bit mode - extended
+	//13 bit mode - extended
 	{
-		if (val > 0xFFF){
-			val |= 0xE000;
-		}
+		TMP102_CHECKSIGN_13BIT(val);
 	}
 
 	// Convert to float temperature value (Celsius)
-	temp_c = (float)(val * 0.0625);
-
+	temp_c = (float) (val * 0.0625);
 
 	return temp_c;
 }
@@ -147,22 +159,28 @@ float TMP102GetTempFloat(TMP102_t *tmp102)
  * @param[*value] - array of 2 bytes, [0] integer part , [1] decimal part
  * @return - void
  */
-void TMP102GetTempInt(TMP102_t *tmp102, uint8_t *value)
+void TMP102GetTempInt(TMP102_t *tmp102, int8_t *value)
 {
 	// define variables
 	int16_t val;
 	// read temp data from register
 	val = (int16_t) TMP102_Read16(tmp102, TMP102_REG_TEMP);
 
-	// Convert to 2's complement, since temperature can be negative
-	if (val > 0x7FF)
+	// 12 bit mode - normal
+	if (tmp102->Configuration.TMP102_EM == 0)
 	{
-		val |= 0xF000;
+		// check if value is negative
+		TMP102_CHECKSIGN_12BIT(val);
+	}
+	else
+	//13 bit mode - extended
+	{
+		TMP102_CHECKSIGN_13BIT(val);
 	}
 
 	// Convert to float temperature value (Celsius)
-	value[0] = val / 16; // // integer part
-	value[1] = ((val * 100) / 16) - (value[0] * 100); // decimal part
+	value[0] = val * TMP102_RESOLUTION; // // integer part
+	value[1] = ((val * 100) * TMP102_RESOLUTION) - (value[0] * 100); // decimal part
 }
 
 /*
@@ -187,7 +205,8 @@ void TMP102GetConfiguration(TMP102_t *tmp102)
  * @param[value] - predefined register values TMP102_CR_XXX @config
  * @return - status msg
  */
-uint8_t TMP102WriteConfig(TMP102_t *tmp102, TMP102writeConfig command, uint16_t value)
+uint8_t TMP102WriteConfig(TMP102_t *tmp102, TMP102writeConfig command,
+		uint16_t value)
 {
 	// read raw config value
 	uint16_t config;
@@ -197,80 +216,53 @@ uint8_t TMP102WriteConfig(TMP102_t *tmp102, TMP102writeConfig command, uint16_t 
 	// MSB [CR1][CR0][AL][EM][0][0][0][0][OS][R1][R0][F1][F0][POL][TM][SD] LSB
 	//     [7]  [6]  [5] [4] [3][2][1][0] [7] [6] [5] [4] [3] [2] [1] [0]
 
+	TMP102_CHECK_REGISTER_2BIT(value, tmp102->ErrorCode);
 	// select command
 	switch (command)
 	{
 
 	case TMP102_WRITE_SHUTDOWN:
 
-		// check if the value fits in the register [1 bit]
-		if (value > 1)
-		{
-			tmp102->ErrorCode = TMP102_ERR_WRONGCONFIG;
-			return TMP102_ERR_WRONGCONFIG;
-		}
-
-		TMP102_EDITCONIFG_1BIT(config,value,TMP102_CR_OFFSET_SD);
+		TMP102_CHECK_REGISTER_1BIT(value, tmp102->ErrorCode)
+		;
+		TMP102_EDITCONIFG_1BIT(config, value, TMP102_CR_OFFSET_SD)
+		;
 		break;
 
 	case TMP102_WRITE_THERMOSTATMODE:
 
-		// check if the value fits in the register [1 bit]
-		if (value > 1)
-		{
-			tmp102->ErrorCode = TMP102_ERR_WRONGCONFIG;
-			return TMP102_ERR_WRONGCONFIG;
-		}
-
-		TMP102_EDITCONIFG_1BIT(config,value,TMP102_CR_OFFSET_TM);
+		TMP102_CHECK_REGISTER_1BIT(value, tmp102->ErrorCode)
+		;
+		TMP102_EDITCONIFG_1BIT(config, value, TMP102_CR_OFFSET_TM)
+		;
 		break;
 
 	case TMP102_WRITE_POLARITY:
 
-		// check if the value fits in the register [1 bit]
-		if (value > 1)
-		{
-			tmp102->ErrorCode = TMP102_ERR_WRONGCONFIG;
-			return tmp102->ErrorCode;
-		}
-
-		TMP102_EDITCONIFG_1BIT(config,value,TMP102_CR_OFFSET_POL);
+		TMP102_CHECK_REGISTER_1BIT(value, tmp102->ErrorCode)
+		;
+		TMP102_EDITCONIFG_1BIT(config, value, TMP102_CR_OFFSET_POL)
+		;
 		break;
 
 	case TMP102_WRITE_FALUTQUEUE:
 
-		// check if the value fits in the register [2 bits]
-		if (value > 3)
-		{
-			tmp102->ErrorCode = TMP102_ERR_WRONGCONFIG;
-			return tmp102->ErrorCode;
-		}
-
-		TMP102_EDITCONIFG_2BIT(config,value,TMP102_CR_OFFSET_FQ);
+		TMP102_EDITCONIFG_2BIT(config, value, TMP102_CR_OFFSET_FQ)
+		;
 		break;
 
 	case TMP102_WRITE_EXTENDEDMODE:
 
-		// check if the value fits in the register [1 bit]
-		if (value > 1)
-		{
-			tmp102->ErrorCode = TMP102_ERR_WRONGCONFIG;
-			return tmp102->ErrorCode;
-		}
-
-		TMP102_EDITCONIFG_1BIT(config,value,TMP102_CR_OFFSET_EM);
+		TMP102_CHECK_REGISTER_1BIT(value, tmp102->ErrorCode)
+		;
+		TMP102_EDITCONIFG_1BIT(config, value, TMP102_CR_OFFSET_EM)
+		;
 		break;
 
 	case TMP102_WRITE_CONV_RATE:
 
-		// check if the value fits in the register [2 bits]
-		if (value > 3)
-		{
-			tmp102->ErrorCode = TMP102_ERR_WRONGCONFIG;
-			return tmp102->ErrorCode;
-		}
-
-		TMP102_EDITCONIFG_2BIT(config,value,TMP102_CR_OFFSET_CR);
+		TMP102_EDITCONIFG_2BIT(config, value, TMP102_CR_OFFSET_CR)
+		;
 		break;
 	}
 
@@ -298,19 +290,24 @@ void TMP102GetMinMaxTemp(TMP102_t *tmp102)
 	val_min = (int16_t) TMP102_Read16(tmp102, TMP102_REG_MINTEMP);
 
 	// Convert to 2's complement, since temperature can be negative
-	if (val_max > 0x7FF)
+
+	// 12 bit mode - normal
+	if (tmp102->Configuration.TMP102_EM == 0)
 	{
-		val_max |= 0xF000;
+		TMP102_CHECKSIGN_12BIT(val_min);
+		TMP102_CHECKSIGN_12BIT(val_max);
+	}
+	else
+	//13 bit mode - extended
+	{
+		TMP102_CHECKSIGN_13BIT(val_min);
+		TMP102_CHECKSIGN_13BIT(val_max);
 	}
 
-	if (val_min > 0x7FF)
-	{
-		val_min |= 0xF000;
-	}
 #if(TMP102_USE_FLOATNUMBERS == 1)
 	// Convert to float temperature value (Celsius)
-	tmp102->MaxTemperature = (float)(val_max * TMP102_RESOLUTION);
-	tmp102->MinTemperature = (float)(val_min * TMP102_RESOLUTION);
+	tmp102->MaxTemperature = (float) (val_max * TMP102_RESOLUTION);
+	tmp102->MinTemperature = (float) (val_min * TMP102_RESOLUTION);
 #else
 	tmp102->MaxTemperatureIntegerPart = (val_max * TMP102_RESOLUTION);
 	tmp102->MaxTemperatureDecimalPart = abs(((val_max - (tmp102->MaxTemperatureIntegerPart / TMP102_RESOLUTION)) * 100) * TMP102_RESOLUTION);
@@ -330,7 +327,8 @@ void TMP102GetMinMaxTemp(TMP102_t *tmp102)
  * @return - status
  */
 #if (TMP102_USE_FLOATNUMBERS == 1)
-uint8_t TMP102WriteMinMaxTempFloat(TMP102_t *tmp102, float temp, uint8_t MinOrMax)
+uint8_t TMP102WriteMinMaxTempFloat(TMP102_t *tmp102, float temp,
+		uint8_t MinOrMax)
 {
 
 	// value send to function is too high or too low
@@ -506,8 +504,10 @@ void TMP102Init(TMP102_t *tmp102, I2C_HandleTypeDef *initI2CHandle,
 	tmp102->DeviceAdress = initDeviceAddress;
 
 	// Write new config - defined by user
-	TMP102WriteConfig(tmp102, TMP102_WRITE_CONV_RATE, TMP102_CR_CONV_RATE_4Hz);
+	TMP102WriteConfig(tmp102, TMP102_WRITE_CONV_RATE, TMP102_CR_CONV_RATE_8Hz);
 	TMP102WriteConfig(tmp102, TMP102_WRITE_SHUTDOWN, TMP102_CR_MODE_CONTINUOS);
+	TMP102WriteConfig(tmp102, TMP102_WRITE_EXTENDEDMODE,
+	TMP102_CR_EXTENDED_ON);
 
 	TMP102GetConfiguration(tmp102);
 	TMP102GetMinMaxTemp(tmp102);
